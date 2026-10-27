@@ -1,0 +1,56 @@
+name: Verify TransitFlow
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-integration:
+    runs-on: ubuntu-latest
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ ping: 1 })'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MONGODB_URI: mongodb://127.0.0.1:27017/transport_management_system_test
+      JWT_SECRET: ci-only-secret-do-not-use-in-production
+      PORT: 4000
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build frontend
+        working-directory: client
+        run: npm install --no-audit --no-fund && npm run build
+      - name: Install backend dependencies
+        working-directory: server
+        run: npm install --no-audit --no-fund
+      - name: Check backend syntax
+        working-directory: server
+        run: npm run check
+      - name: Seed test database
+        working-directory: server
+        run: npm run seed
+      - name: Start API server
+        working-directory: server
+        run: nohup npm start > /tmp/transitflow-api.log 2>&1 &
+      - name: Wait for API and MongoDB
+        run: |
+          for i in $(seq 1 40); do
+            if curl --fail --silent http://127.0.0.1:4000/api/health > /tmp/health.json; then cat /tmp/health.json; grep -q 'connected' /tmp/health.json && exit 0; fi
+            sleep 2
+          done
+          cat /tmp/transitflow-api.log
+          exit 1
+      - name: Run passenger-driver workflow integration tests
+        working-directory: server
+        run: npm run test:integration
